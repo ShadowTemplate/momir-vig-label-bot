@@ -34,10 +34,11 @@ class MomirVigLabelBot:
             else:
                 self.send_error_message(chat_id)
         else:
-            self._bot.send_message(
-                chat_id=MY_ID,
-                text=f"Unknown message update type: {update}.",
-            )
+            if "Timed out" not in str(update):
+                self._bot.send_message(
+                    chat_id=MY_ID,
+                    text=f"Unknown message update type: {update}.",
+                )
         log.info(f"Processed new message.")
 
     def process_batch_updates(self):
