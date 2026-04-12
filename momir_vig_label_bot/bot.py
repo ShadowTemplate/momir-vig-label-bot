@@ -34,7 +34,7 @@ class MomirVigLabelBot:
             else:
                 self.send_error_message(chat_id)
         else:
-            if "Timed out" not in str(update):
+            if "Timed out" not in str(update) and "urllib3 HTTPError" not in str(update):
                 self._bot.send_message(
                     chat_id=MY_ID,
                     text=f"Unknown message update type: {update}.",
