@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import subprocess
@@ -7,7 +8,8 @@ import requests
 from telegram import InlineKeyboardButton, ReplyKeyboardMarkup
 
 from momir_vig_label_bot.constants import (
-    E10_DENSITY, E10_TARGET_MM, MAX_MANA_VALUE, SCRYFALL_RANDOM_CARD)
+    E10_DENSITY, E10_TARGET_MM, MAX_MANA_VALUE, SCRYFALL_RANDOM_CARD,
+    SCRYFALL_USER_AGENT)
 from momir_vig_label_bot.credentials import (
     E10_MAC, E10_PYTHON, MOMIR_VIG_LABEL_BOT_TOKEN, MY_ID)
 from momir_vig_label_bot.logger import get_application_logger
@@ -97,11 +99,20 @@ class MomirVigLabelBot:
             return
         log.debug(card)
         log.debug(f"Sending card picture...")
-        self._bot.send_photo(
-            chat_id=chat_id,
-            photo=f"{card['png']}",
-            caption=f"{card['url']}",
-        )
+        # Telegram would fetch the URL itself, but Scryfall rejects requests
+        # without a User-Agent, so we download the picture and upload the bytes.
+        picture = self.get_card_picture(card['png'])
+        if picture:
+            self._bot.send_photo(
+                chat_id=chat_id,
+                photo=picture,
+                caption=f"{card['url']}",
+            )
+        else:
+            self._bot.send_message(
+                chat_id=chat_id,
+                text=f"Unable to download the card picture.\n\n{card['url']}",
+            )
         text = f"{card['name']} {card['mana_cost']} | {card['type_line']} | {card['pt']}"
         if card['text']:
             text += f"\n{card['text']}"
@@ -210,7 +221,10 @@ class MomirVigLabelBot:
             )
 
     def get_random_card(self, mana_value):
-        r = requests.get(SCRYFALL_RANDOM_CARD + mana_value)
+        r = requests.get(
+            SCRYFALL_RANDOM_CARD + mana_value,
+            headers={"User-Agent": SCRYFALL_USER_AGENT},
+        )
         try:
             r.raise_for_status()
         except requests.exceptions.HTTPError as e:
@@ -231,3 +245,12 @@ class MomirVigLabelBot:
             "url": data["scryfall_uri"],
             "png": data["image_uris"]["normal"],
         }, r
+
+    def get_card_picture(self, png_url):
+        r = requests.get(png_url, headers={"User-Agent": SCRYFALL_USER_AGENT})
+        try:
+            r.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            log.warning(e)
+            return None
+        return io.BytesIO(r.content)

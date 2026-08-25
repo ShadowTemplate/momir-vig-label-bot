@@ -1,6 +1,9 @@
 SECRETS_UNTRACKED_FILE = "momir_vig_label_bot.secrets.py"
 MAX_MANA_VALUE = 19
 SCRYFALL_RANDOM_CARD = "https://api.scryfall.com/cards/random?q=type:creature+mv:"
+# Scryfall requires every client to identify itself with a User-Agent, both on
+# the API and on the image CDN. Anonymous requests are rejected.
+SCRYFALL_USER_AGENT = "MomirVigLabelBot/1.0"
 
 # --- SUPVAN / Katasymbol E10 label printer ---
 # Bluetooth MAC of the printer. Left unset on purpose: a MAC identifies
