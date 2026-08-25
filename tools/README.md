@@ -18,7 +18,7 @@ python3 -c "import socket; print(hasattr(socket,'AF_BLUETOOTH'))"
 | `e10_card.py`  | Render an MTG card label; preview or print |
 
 ```sh
-python3 tools/e10_print.py --selftest            # 22 protocol vectors, no hardware
+python3 tools/e10_print.py --selftest            # 21 protocol vectors, no hardware
 python3 tools/e10_print.py --info                # status + loaded media
 python3 tools/e10_print.py --dry-run --text HI   # build everything, send nothing
 python3 tools/e10_print.py --text HELLO --bar 4  # print text + solid ink bar

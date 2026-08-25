@@ -1,9 +1,9 @@
 # Driving the Katasymbol / SUPVAN E10 from Linux
 
-Hard-won notes from making `momir_vig_label_bot/e10.py` work. Everything here
-was measured on a real device, not inferred. Read this before changing the
-print path — **every failure mode below is reported by the firmware as
-success**, so "it ran without error" proves nothing.
+Hard-won notes from making `momir_vig_label_bot/e10.py` work. Almost all of it
+was measured on a real device; the few inferred claims say so. Read this before
+changing the print path — **every failure mode below is reported by the
+firmware as success**, so "it ran without error" proves nothing.
 
 Protocol reference: <https://github.com/heeen/supvan-cups> (`docs/PROTOCOL.md`).
 That project is excellent but targets the T-series; several of its assumptions
@@ -22,10 +22,18 @@ time here.
 | MAC OUI | `A4:93:40` (Supvan) |
 | Printhead | **12 mm = 96 dots = 12 bytes/line** at 203 dpi |
 | Media (this roll) | 15 mm wide, continuous, genuine Supvan RFID tag |
-| Protocols NOT spoken | ESC/POS, ZPL, EPL, IPP. No USB data path — USB-C is charge-only |
+| Protocols NOT spoken | ESC/POS, ZPL, EPL, IPP |
+| USB-C | Charge-only *(inferred)* — see note below |
 
 So `lp` / `lpr` / CUPS can never reach it. The only way in is its own framed
 binary protocol over RFCOMM.
+
+*USB-C charge-only is inferred, not directly proven:* `lsusb` never showed a
+Supvan device (VID `0x1820`) while the `insert_usb` status bit was set, and
+upstream's `models.toml` gives USB PIDs for the T-series but identifies
+E-series by Bluetooth name alone. Not conclusive — the printer may simply have
+been on a different charger at the time. If you ever want certainty, plug it
+into this machine and watch `lsusb`.
 
 ---
 
@@ -172,8 +180,9 @@ python3 -c "import socket; print(hasattr(socket,'AF_BLUETOOTH'))"
 - **Auto power-off** after ~1–2 min idle; it then refuses RFCOMM connects with
   a timeout. `connect()` retries 3×; press the power button to wake it.
 - **Undocumented telemetry** in the `INQUIRY_STA` reply past what upstream
-  documents: bytes 24–25 are battery millivolts (observed 3976 → 4187 while
-  charging), bytes 22–23 look like printhead temperature ×10 (28.7 °C idle →
+  documents. Both readings are interpretations of plausible magnitudes, not
+  confirmed fields: bytes 24–25 look like battery millivolts (3976 → 4187 while
+  charging) and bytes 22–23 like printhead temperature ×10 (28.7 °C idle →
   33.5 °C after a job).
 - **Density 8** prints cleanly on genuine Supvan stock.
 - The device's PnP record is `usb:v05ACp0239d0644` — an **Apple keyboard**
@@ -190,7 +199,7 @@ python3 -c "import socket; print(hasattr(socket,'AF_BLUETOOTH'))"
 breaks:
 
 ```sh
-python3 tools/e10_print.py --selftest        # 22 protocol vectors, no hardware
+python3 tools/e10_print.py --selftest        # 21 protocol vectors, no hardware
 python3 tools/e10_print.py --info            # status flags + loaded media
 python3 tools/e10_print.py --dry-run --text HI
 python3 tools/e10_print.py --twobuf          # 2-buffer seam diagnostic
