@@ -9,7 +9,7 @@ from telegram import InlineKeyboardButton, ReplyKeyboardMarkup
 
 from momir_vig_label_bot.constants import (
     E10_DENSITY, E10_TARGET_MM, MAX_MANA_VALUE, SCRYFALL_RANDOM_CARD,
-    SCRYFALL_USER_AGENT)
+    SCRYFALL_USER_AGENT, TELEGRAM_MAX_PHOTO_RATIO)
 from momir_vig_label_bot.credentials import (
     E10_MAC, E10_PYTHON, MOMIR_VIG_LABEL_BOT_TOKEN, MY_ID)
 from momir_vig_label_bot.logger import get_application_logger
@@ -153,11 +153,10 @@ class MomirVigLabelBot:
             )
         else:
             log.debug(f"Successfully generated label!")
-            with open(label_image_path, "rb") as label_image:
-                self._bot.send_photo(
-                    chat_id=chat_id,
-                    photo=label_image,
-                )
+            try:
+                self.send_label_preview(chat_id, label_image_path)
+            except Exception:  # a failed preview must never skip the printing
+                log.exception("Unable to send the label preview")
         self.print_label(chat_id, card)
         subprocess.run(
             f"rm {label_image_path} {oracle_text_path} {tmp_buffer_path}",
@@ -165,6 +164,32 @@ class MomirVigLabelBot:
             capture_output=True,  # captures stdout + stderr
             text=True  # decode bytes to str
         )
+
+    def send_label_preview(self, chat_id, label_image_path):
+        """Send the rendered label to Telegram as a picture.
+
+        Telegram rejects any photo thinner than TELEGRAM_MAX_PHOTO_RATIO, which
+        a creature with no abilities hits: with no oracle text the label is a
+        single line, and `convert -trim` crops it to a thin strip. So pad it
+        vertically first. This only affects the preview - the printer renders
+        its own image from the card.
+        """
+        from PIL import Image
+        with Image.open(label_image_path) as label:
+            width, height = label.size
+            # ceil, plus a dot of slack so we never sit exactly on the limit
+            min_height = -(-width // TELEGRAM_MAX_PHOTO_RATIO) + 1
+            if height < min_height:
+                log.debug(f"Padding the {width}x{height} label preview to "
+                          f"{width}x{min_height}...")
+                padded = Image.new(label.mode, (width, min_height), "white")
+                padded.paste(label, (0, (min_height - height) // 2))
+                padded.save(label_image_path)
+        with open(label_image_path, "rb") as label_image:
+            self._bot.send_photo(
+                chat_id=chat_id,
+                photo=label_image,
+            )
 
     def print_label(self, chat_id, card):
         """Print the card on the E10 label printer.
