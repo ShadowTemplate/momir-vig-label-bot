@@ -140,6 +140,8 @@ def main():
                     help="N mm of random dots: 1 buffer but MANY data frames")
     ap.add_argument("--twobuf", action="store_true",
                     help="2-buffer diagnostic: a solid bar inside EACH buffer")
+    ap.add_argument("--overlap", type=int, default=e10.BOUNDARY_OVERLAP,
+                    help="columns re-sent at each buffer boundary")
     ap.add_argument("--stream", choices=("perbuf", "single"), default="perbuf",
                     help="transfer mode: one BUF_FULL per buffer, or one stream")
     a = ap.parse_args()
@@ -230,7 +232,7 @@ def main():
 
     try:
         print_rows(rows, mac, head_dots=head_dots, density=a.density,
-                   log=_L, mode=a.stream)
+                   log=_L, mode=a.stream, overlap=a.overlap)
     except e10.E10Error as exc:
         print(f"[!] {exc}")
         return 1

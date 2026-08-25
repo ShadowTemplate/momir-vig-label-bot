@@ -40,4 +40,7 @@ burns nothing, and reports success at every step — a silent blank label.
 - `remaining_mm` from the RFID tag counts **millimetres of tape**, not labels.
 - Density 8 prints cleanly on genuine Supvan stock.
 
+See [`docs/e10-printer.md`](../docs/e10-printer.md) for the firmware traps —
+every one of them reports success while printing nothing.
+
 Protocol reference: <https://github.com/heeen/supvan-cups/blob/HEAD/docs/PROTOCOL.md>

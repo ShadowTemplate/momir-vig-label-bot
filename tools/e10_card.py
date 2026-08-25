@@ -27,6 +27,8 @@ def main():
     ap.add_argument("--head-mm", type=int, default=e10.HEAD_MM)
     ap.add_argument("--target-mm", type=int, default=70,
                     help="minimum label length; grows to fit the text")
+    ap.add_argument("--overlap", type=int, default=e10.BOUNDARY_OVERLAP,
+                    help="columns re-sent at each buffer boundary")
     ap.add_argument("--density", type=int, default=8)
     ap.add_argument("--preview"); ap.add_argument("--print", action="store_true")
     ap.add_argument("--mac", default=None)
@@ -60,7 +62,8 @@ def main():
                 print("[*] " + (fmt % args if args else fmt))
         try:
             e10.print_rows(e10.image_to_rows(img, head_dots), a.mac or E10_MAC,
-                           head_dots=head_dots, density=a.density, log=_L)
+                           head_dots=head_dots, density=a.density, log=_L,
+                           overlap=a.overlap)
         except e10.E10Error as exc:
             print(f"[!] {exc}")
             return 1

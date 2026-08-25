@@ -158,23 +158,95 @@ def build_print_buffer(image_data, per_line_byte, cols_in_buf, page_st,
     return bytes(buf)
 
 
+#: Columns re-sent at the start of every buffer after the first.
+#:
+#: A 1-dot white line appears at each buffer boundary. Re-sending the boundary
+#: column was tried and made NO difference, so the column is not being dropped
+#: from the data - the printer is starving mid-label and the tape advances a
+#: step unburnt. Kept as a tunable, default off; the fix is to not starve it.
+BOUNDARY_OVERLAP = 0
+
+
+def _is_blank_column(image_data, per_line_byte, col):
+    a = col * per_line_byte
+    return not any(image_data[a:a + per_line_byte])
+
+
+def choose_splits(image_data, per_line_byte, payload_cols, max_cols, margin_top):
+    """Column count for each buffer, preferring seams that land in whitespace.
+
+    The printer loses one printed column at every buffer boundary, and nothing
+    host-side prevents it: re-sending the column changes nothing, streaming
+    back to back changes nothing, and the speed cannot be held constant because
+    each buffer must declare its own. So place the seam instead of fighting it
+    - split on a column with no ink, where a missing dot column is invisible.
+    Falls back to the largest legal buffer when no blank column is available.
+    """
+    splits, start, remaining = [], 0, payload_cols
+    while remaining > 0:
+        if remaining <= max_cols:
+            splits.append(remaining)
+            break
+        n_left = -(-remaining // max_cols)
+        lo = max(1, remaining - max_cols * (n_left - 1))
+        hi = max_cols
+        runs = [k for k in range(hi, lo - 1, -1)
+                if _is_blank_column(image_data, per_line_byte,
+                                    margin_top + start + k)]
+        if runs:
+            # Prefer the middle of a blank run so the lost column has ink-free
+            # neighbours on both sides.
+            best, best_score = runs[0], -1
+            for k in runs:
+                c = margin_top + start + k
+                score = 0
+                for d in (1, 2):
+                    if _is_blank_column(image_data, per_line_byte, c - d):
+                        score += 1
+                    if _is_blank_column(image_data, per_line_byte, c + d):
+                        score += 1
+                if score > best_score or (score == best_score and k > best):
+                    best, best_score = k, score
+            k = best
+        else:
+            k = hi
+        splits.append(k)
+        start += k
+        remaining -= k
+    return splits
+
+
 def split_into_buffers(image_data, per_line_byte, total_cols,
-                       margin_top, margin_bottom, black, red):
+                       margin_top, margin_bottom, black, red,
+                       overlap=BOUNDARY_OVERLAP, align_seams=True):
     cols = total_cols - margin_top - margin_bottom
     max_cols = MAX_BUF_DATA // per_line_byte
+    step = max_cols - overlap
+    if align_seams:
+        sizes = choose_splits(image_data, per_line_byte, cols, step, margin_top)
+    else:
+        sizes, rem = [], cols
+        while rem > 0:
+            sizes.append(min(rem, step))
+            rem -= sizes[-1]
+
     chunks, cur = [], 0
-    while cols > 0:
-        n = min(cols, max_cols)
+    for n in sizes:
         chunks.append((cur, n))
         cur += n
-        cols -= n
     last = len(chunks) - 1
-    return [build_print_buffer(
-        image_data[(margin_top + st) * per_line_byte:
-                   (margin_top + st) * per_line_byte + n * per_line_byte],
-        per_line_byte, n, i == 0, i == last, i == last,
-        margin_top, margin_bottom, black, red)
-        for i, (st, n) in enumerate(chunks)]
+    out = []
+    for i, (st, n) in enumerate(chunks):
+        if i and overlap:
+            st -= overlap
+            n += overlap
+        assert n <= max_cols, f"buffer {i}: {n} cols exceeds {max_cols}"
+        a = (margin_top + st) * per_line_byte
+        out.append(build_print_buffer(
+            image_data[a:a + n * per_line_byte], per_line_byte, n,
+            i == 0, i == last, i == last,
+            margin_top, margin_bottom, black, red))
+    return out
 
 
 def compress_lzma(data):
@@ -453,32 +525,48 @@ def _wait_buffer_ready(dev, attempts=80):
     raise E10Error("Printer buffer never drained.")
 
 
-def transfer_buffers(dev, bufs, log=None):
-    """Send print buffers ONE AT A TIME, with flow control between them.
+def prepare_buffers(bufs, log=None):
+    """Compress and frame every buffer UP FRONT, before the motor starts.
 
-    The protocol is a per-buffer loop, not one stream for the page:
-    NEXT_ZIPPEDBULK ("next zipped bulk") announces a block, BUF_FULL says "I
-    have filled a buffer", and the buf_full status bit is the printer saying
-    "pause input". Concatenating every 4096-byte buffer into a single LZMA
-    stream makes this firmware print only the FIRST buffer and report success -
-    a label silently truncated at ~44 mm.
+    Anything done between buffers is time the printhead spends starving while
+    the tape keeps advancing, so no compression happens mid-print.
     """
-    for i, buf in enumerate(bufs):
-        comp = compress_lzma(buf)
-        speed = calc_speed(len(comp))
+    comps = [compress_lzma(b) for b in bufs]
+    # Every buffer MUST carry its own calc_speed(len(comp)). The value is not a
+    # free speed dial - the firmware validates it against the declared length
+    # and silently refuses the whole job otherwise: it acks everything, reports
+    # success and prints nothing. Measured twice each, zero tape: a 1317B
+    # buffer at 55 instead of its own 45, and a 517B buffer at 45 instead of
+    # its own 55. So the motor rate DOES change at a seam and cannot be
+    # equalised; see choose_splits for how the seam is hidden instead.
+    prepared = []
+    for i, comp in enumerate(comps):
         frames = build_data_frames(comp)
+        prepared.append((comp, frames, calc_speed(len(comp))))
         if log:
             log.info("buffer %d/%d: %dB lzma, %d frame(s), speed=%d",
-                     i + 1, len(bufs), len(comp), len(frames), speed)
-        _wait_buffer_ready(dev)
+                     i + 1, len(comps), len(comp), len(frames),
+                     prepared[-1][2])
+    return prepared
+
+
+def transfer_buffers(dev, prepared, log=None):
+    """Stream prepared buffers back to back.
+
+    Deliberately does NOT wait for buf_full to clear between buffers: that bit
+    clears only once the printer has drained what it had, which is already too
+    late - it stalls, and the tape advances a step unburnt, leaving a white
+    line through whatever glyph sits at the seam. The per-frame acks are the
+    real flow control; the firmware simply withholds them until it has room.
+    """
+    for i, (comp, frames, speed) in enumerate(prepared):
         if not dev.cmd(CMD_NEXT_ZIPPEDBULK, 512, len(frames)):
             raise E10Error(f"Printer did not answer NEXT_ZIPPEDBULK "
-                           f"(buffer {i + 1}/{len(bufs)}).")
+                           f"(buffer {i + 1}/{len(prepared)}).")
         dev.send_frames(frames, log=log)
-        time.sleep(0.02)
-        dev.cmd(CMD_BUF_FULL, len(comp), speed, want=False)
-        time.sleep(0.05)
-        dev.drain()   # final-frame ack + BUF_FULL reply, deliberately unread
+        # Read the BUF_FULL reply rather than draining it: same round trip,
+        # but it keeps the stream in sync and costs no extra delay.
+        dev.cmd(CMD_BUF_FULL, len(comp), speed, want=True)
 
 
 def transfer_single_stream(dev, bufs, log=None):
@@ -501,7 +589,7 @@ def transfer_single_stream(dev, bufs, log=None):
 
 
 def print_rows(rows, mac, head_dots=HEAD_DOTS, density=8, log=None,
-               mode="perbuf"):
+               mode="perbuf", overlap=BOUNDARY_OVERLAP):
     """Send raster rows to the printer. Raises E10Error on failure."""
     def note(fmt, *args):
         if log:
@@ -509,9 +597,10 @@ def print_rows(rows, mac, head_dots=HEAD_DOTS, density=8, log=None,
 
     img, cols, bpl = raster_to_column_major(rows, head_dots, len(rows))
     bufs = split_into_buffers(img, bpl, cols, MARGIN_DOTS, MARGIN_DOTS,
-                              density, density)
+                              density, density, overlap=overlap)
     note("%d lines (%.0f mm), %d buffer(s)", len(rows),
          len(rows) / DOTS_PER_MM, len(bufs))
+    prepared = prepare_buffers(bufs, log=log) if mode != "single" else None
 
     dev = connect(mac)
     try:
@@ -540,7 +629,7 @@ def print_rows(rows, mac, head_dots=HEAD_DOTS, density=8, log=None,
         if mode == "single":
             transfer_single_stream(dev, bufs, log=log)
         else:
-            transfer_buffers(dev, bufs, log=log)
+            transfer_buffers(dev, prepared, log=log)
 
         for _ in range(160):
             time.sleep(0.25)
@@ -571,12 +660,14 @@ def print_rows(rows, mac, head_dots=HEAD_DOTS, density=8, log=None,
         dev.close()
 
 
-def print_card(card, mac, density=8, target_mm=70, log=None):
+def print_card(card, mac, density=8, target_mm=70, log=None,
+               overlap=BOUNDARY_OVERLAP):
     """Render and print one card label. Returns the label length in mm."""
     img, size, n_lines = render_card(card, target_mm=target_mm)
     if log:
         log.info("e10: %r -> %dx%d dots (%.0f mm), title %dpx, %d oracle line(s)",
                  card.get("name"), img.size[0], img.size[1],
                  img.size[0] / DOTS_PER_MM, size, n_lines)
-    print_rows(image_to_rows(img), mac, density=density, log=log)
+    print_rows(image_to_rows(img), mac, density=density, log=log,
+               overlap=overlap)
     return img.size[0] / DOTS_PER_MM
