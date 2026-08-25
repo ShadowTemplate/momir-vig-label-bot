@@ -2,3 +2,4 @@ momir_vig_label_bot/secrets.py
 venv/
 .idea/
 *.pyc
+__pycache__/

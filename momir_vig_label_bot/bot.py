@@ -6,8 +6,10 @@ import telegram
 import requests
 from telegram import InlineKeyboardButton, ReplyKeyboardMarkup
 
-from momir_vig_label_bot.constants import MAX_MANA_VALUE, SCRYFALL_RANDOM_CARD
-from momir_vig_label_bot.credentials import MOMIR_VIG_LABEL_BOT_TOKEN, MY_ID
+from momir_vig_label_bot.constants import (
+    E10_DENSITY, E10_TARGET_MM, MAX_MANA_VALUE, SCRYFALL_RANDOM_CARD)
+from momir_vig_label_bot.credentials import (
+    E10_MAC, E10_PYTHON, MOMIR_VIG_LABEL_BOT_TOKEN, MY_ID)
 from momir_vig_label_bot.logger import get_application_logger
 
 log = get_application_logger()
@@ -145,12 +147,67 @@ class MomirVigLabelBot:
                     chat_id=chat_id,
                     photo=label_image,
                 )
+        self.print_label(chat_id, card)
         subprocess.run(
             f"rm {label_image_path} {oracle_text_path} {tmp_buffer_path}",
             shell=True,  # needed for && and shell syntax
             capture_output=True,  # captures stdout + stderr
             text=True  # decode bytes to str
         )
+
+    def print_label(self, chat_id, card):
+        """Print the card on the E10 label printer.
+
+        Runs in a subprocess under E10_PYTHON: this bot's venv (Python 3.9) is
+        built without Bluetooth support, so it cannot open an RFCOMM socket
+        itself. Best-effort throughout - the printer sleeps after a couple of
+        minutes idle, and a failure here must never take the bot down.
+        """
+        log.debug("Printing label...")
+        card_json_path = f"/tmp/momir/{int(time.time() * 1000)}_card.json"
+        try:
+            os.makedirs("/tmp/momir/", exist_ok=True)
+            with open(card_json_path, "w") as out_f:
+                json.dump(card, out_f)
+
+            result = subprocess.run(
+                [
+                    E10_PYTHON, "-m", "momir_vig_label_bot.print_cli",
+                    card_json_path,
+                    "--mac", str(E10_MAC),
+                    "--density", str(E10_DENSITY),
+                    "--target-mm", str(E10_TARGET_MM),
+                ],
+                cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+        except Exception as exc:  # never let the printer take the bot down
+            log.exception("Unexpected label printing error")
+            self._bot.send_message(
+                chat_id=chat_id,
+                text=f"Couldn't print the label.\n\n{type(exc).__name__}: {exc}",
+            )
+            return
+        finally:
+            subprocess.run(f"rm -f {card_json_path}", shell=True,
+                           capture_output=True, text=True)
+
+        if result.returncode != 0:
+            reason = (result.stderr or result.stdout or "unknown error").strip()
+            log.warning(f"Label printing failed: {reason}")
+            self._bot.send_message(
+                chat_id=chat_id,
+                text=f"Couldn't print the label.\n\n{reason}",
+            )
+        else:
+            mm = (result.stdout or "").strip()
+            log.debug(f"Printed a {mm} mm label.")
+            self._bot.send_message(
+                chat_id=chat_id,
+                text=f"Printed a {mm} mm label.",
+            )
 
     def get_random_card(self, mana_value):
         r = requests.get(SCRYFALL_RANDOM_CARD + mana_value)
