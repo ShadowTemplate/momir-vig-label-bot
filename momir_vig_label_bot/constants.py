@@ -5,6 +5,10 @@ SCRYFALL_RANDOM_CARD = "https://api.scryfall.com/cards/random?q=type:creature+mv
 # the API and on the image CDN. Anonymous requests are rejected.
 SCRYFALL_USER_AGENT = "MomirVigLabelBot/1.0"
 
+# Telegram rejects any photo whose width/height ratio exceeds this, so a label
+# thinner than that has to be padded before it can be sent as a picture.
+TELEGRAM_MAX_PHOTO_RATIO = 20
+
 # --- SUPVAN / Katasymbol E10 label printer ---
 # Bluetooth MAC of the printer. Left unset on purpose: a MAC identifies
 # somebody's physical device, so it does not belong in the repo. When empty the
