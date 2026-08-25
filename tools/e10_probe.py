@@ -8,13 +8,29 @@ framed protocol before investing in a full driver.
 Protocol reference: https://github.com/heeen/supvan-cups/blob/HEAD/docs/PROTOCOL.md
 
 Usage:
-    python3 tools/e10_probe.py [MAC]     # default MAC below
+    python3 tools/e10_probe.py [MAC]     # MAC optional; discovered if omitted
 """
 import socket
 import sys
 import time
 
-DEFAULT_MAC = "A4:93:40:B7:3B:F0"
+SUPVAN_OUI = "A4:93:40"
+
+
+def discover_mac():
+    """Find a paired Supvan printer by its OUI. A specific MAC identifies
+    somebody's physical device, so none is hardcoded here."""
+    import subprocess
+    try:
+        out = subprocess.run(["bluetoothctl", "devices"], capture_output=True,
+                             text=True, timeout=6).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        p = line.split(None, 2)
+        if len(p) >= 2 and p[0] == "Device" and p[1].upper().startswith(SUPVAN_OUI):
+            return p[1]
+    return None
 
 MAGIC1, MAGIC2 = 0x7E, 0x5A
 PROTO_ID, PROTO_VER = 0x10, 0x01
@@ -84,7 +100,10 @@ def try_connect(mac, channels=range(1, 31)):
 
 
 def main():
-    mac = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_MAC
+    mac = sys.argv[1] if len(sys.argv) > 1 else discover_mac()
+    if not mac:
+        print("[!] No paired Supvan printer found. Pair it, or pass its MAC.")
+        return 1
     print(f"[*] target {mac}  (printer must be POWERED ON)")
 
     sock = try_connect(mac)

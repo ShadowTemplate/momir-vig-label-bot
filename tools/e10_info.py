@@ -3,9 +3,13 @@
 
 None of these commands print or feed paper.
 """
+import os
 import socket, sys, time
 
-MAC = sys.argv[1] if len(sys.argv) > 1 else "A4:93:40:B7:3B:F0"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from momir_vig_label_bot import e10
+
+MAC = e10.resolve_mac(sys.argv[1] if len(sys.argv) > 1 else None)
 HDR = 22  # BT_RESP_HEADER_LEN
 
 

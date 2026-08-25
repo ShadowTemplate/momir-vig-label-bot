@@ -150,7 +150,7 @@ def main():
         return selftest()
 
     from momir_vig_label_bot.credentials import E10_MAC
-    mac = a.mac or E10_MAC
+    mac = e10.resolve_mac(a.mac or E10_MAC or None)
     head_dots = a.head_mm * DOTS_PER_MM
     bpl = -(-head_dots // 8)
 

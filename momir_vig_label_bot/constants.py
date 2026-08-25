@@ -3,8 +3,11 @@ MAX_MANA_VALUE = 19
 SCRYFALL_RANDOM_CARD = "https://api.scryfall.com/cards/random?q=type:creature+mv:"
 
 # --- SUPVAN / Katasymbol E10 label printer ---
-# Bluetooth MAC of the printer. Override with the E10_MAC env var or secrets.py.
-E10_MAC_DEFAULT = "A4:93:40:B7:3B:F0"
+# Bluetooth MAC of the printer. Left unset on purpose: a MAC identifies
+# somebody's physical device, so it does not belong in the repo. When empty the
+# driver finds the printer among the paired Bluetooth devices by Supvan's OUI.
+# Override via the E10_MAC env var or secrets.py.
+E10_MAC_DEFAULT = ""
 # Burn energy 0-15. 8 prints cleanly on genuine Supvan stock.
 E10_DENSITY = 8
 # Minimum label length in mm; wordier cards produce longer labels, never

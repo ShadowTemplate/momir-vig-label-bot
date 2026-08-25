@@ -11,7 +11,9 @@ success at every step - a silent blank label.
 """
 import lzma
 import os
+import re
 import socket
+import subprocess
 import time
 
 DOTS_PER_MM = 8
@@ -271,6 +273,49 @@ def calc_speed(n):
 
 
 # ---------------------------------------------------------------- device
+#: Supvan's Bluetooth OUI, and the vendor's own device-name pattern. Used to
+#: find the printer instead of hardcoding one unit's MAC - a MAC is a
+#: persistent identifier for somebody's physical device and does not belong in
+#: a public repo.
+SUPVAN_OUI = "A4:93:40"
+SUPVAN_NAME_RE = re.compile(r"^[TGD]\d{2}")
+
+
+def discover_mac(timeout=6.0):
+    """MAC of a paired Supvan printer, or None.
+
+    Reads BlueZ's paired-device list; the printer must already be paired,
+    which is how the vendor app sets it up anyway.
+    """
+    try:
+        out = subprocess.run(["bluetoothctl", "devices"], capture_output=True,
+                             text=True, timeout=timeout).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) >= 2 and parts[0] == "Device":
+            mac, name = parts[1], (parts[2] if len(parts) > 2 else "")
+            if mac.upper().startswith(SUPVAN_OUI) or SUPVAN_NAME_RE.match(name):
+                return mac
+    return None
+
+
+def resolve_mac(mac=None):
+    """Explicit MAC, else E10_MAC from the environment, else discovery."""
+    if mac:
+        return mac
+    env = os.environ.get("E10_MAC")
+    if env:
+        return env
+    found = discover_mac()
+    if not found:
+        raise E10Error(
+            "No Supvan printer found. Pair it first (bluetoothctl), or set "
+            "E10_MAC to its address.")
+    return found
+
+
 class E10:
     def __init__(self, mac, timeout=4.0):
         self.timeout = timeout
@@ -588,7 +633,7 @@ def transfer_single_stream(dev, bufs, log=None):
     dev.drain()   # final-frame ack + BUF_FULL reply, deliberately unread
 
 
-def print_rows(rows, mac, head_dots=HEAD_DOTS, density=8, log=None,
+def print_rows(rows, mac=None, head_dots=HEAD_DOTS, density=8, log=None,
                mode="perbuf", overlap=BOUNDARY_OVERLAP):
     """Send raster rows to the printer. Raises E10Error on failure."""
     def note(fmt, *args):
@@ -602,7 +647,7 @@ def print_rows(rows, mac, head_dots=HEAD_DOTS, density=8, log=None,
          len(rows) / DOTS_PER_MM, len(bufs))
     prepared = prepare_buffers(bufs, log=log) if mode != "single" else None
 
-    dev = connect(mac)
+    dev = connect(resolve_mac(mac))
     try:
         if not dev.cmd(CMD_CHECK_DEVICE):
             raise E10Error("Printer did not answer CHECK_DEVICE.")
@@ -660,7 +705,7 @@ def print_rows(rows, mac, head_dots=HEAD_DOTS, density=8, log=None,
         dev.close()
 
 
-def print_card(card, mac, density=8, target_mm=70, log=None,
+def print_card(card, mac=None, density=8, target_mm=70, log=None,
                overlap=BOUNDARY_OVERLAP):
     """Render and print one card label. Returns the label length in mm."""
     img, size, n_lines = render_card(card, target_mm=target_mm)
