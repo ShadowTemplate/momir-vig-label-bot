@@ -236,18 +236,38 @@ def split_into_buffers(image_data, per_line_byte, total_cols,
     for n in sizes:
         chunks.append((cur, n))
         cur += n
-    last = len(chunks) - 1
+    for i in range(1, len(chunks)):
+        st, n = chunks[i]
+        chunks[i] = (st - overlap, n + overlap)
+
     out = []
-    for i, (st, n) in enumerate(chunks):
-        if i and overlap:
-            st -= overlap
-            n += overlap
+    i = 0
+    while i < len(chunks):
+        st, n = chunks[i]
+        is_last = i == len(chunks) - 1
         assert n <= max_cols, f"buffer {i}: {n} cols exceeds {max_cols}"
         a = (margin_top + st) * per_line_byte
-        out.append(build_print_buffer(
+        buf = build_print_buffer(
             image_data[a:a + n * per_line_byte], per_line_byte, n,
-            i == 0, i == last, i == last,
-            margin_top, margin_bottom, black, red))
+            i == 0, is_last, is_last, margin_top, margin_bottom, black, red)
+        # A NON-FINAL buffer that needs more than one compressed data frame
+        # was measured to silently no-op the WHOLE job on this firmware - not
+        # just run slow or lose a column, the entire label - even with clean
+        # status throughout and careful pacing between buffers (see
+        # transfer_buffers). Only the final buffer is exempt: it has no
+        # "more data coming" successor to desync. So rather than send a
+        # too-big non-final buffer, shrink it and push the excess into a new
+        # chunk split off right after it; that chunk gets the same check on
+        # its own turn, so dense content lands in more, smaller buffers
+        # instead of failing outright.
+        if not is_last and n > 1 and \
+                -(-len(compress_lzma(buf)) // DATA_PAYLOAD_SIZE) > 1:
+            new_n = max(1, n // 2)
+            chunks[i] = (st, new_n)
+            chunks.insert(i + 1, (st + new_n, n - new_n))
+            continue
+        out.append(buf)
+        i += 1
     return out
 
 
@@ -556,8 +576,15 @@ def _read_tape_mm(dev, attempts=4, settle=1.0):
     return None
 
 
-def _wait_buffer_ready(dev, attempts=80):
-    """Poll until the printer's input buffer has room (buf_full clear)."""
+def _wait_buffer_ready(dev, attempts=40):
+    """Poll until the printer's input buffer has room (buf_full clear).
+
+    Polled at 0.2s, matching the pace of the other status-polling loops in
+    this module. A tighter interval (0.05s) was tried and measured to get the
+    RFCOMM link reset by the printer mid-poll while it was still busy on a
+    large, slow (multi-frame) buffer - it seems to not tolerate being
+    interrogated that fast while the print head is still working.
+    """
     for _ in range(attempts):
         st = dev.status()
         if st is not None:
@@ -566,7 +593,7 @@ def _wait_buffer_ready(dev, attempts=80):
                 raise E10Error(_flag_message(bad))
             if "buf_full" not in st:
                 return st
-        time.sleep(0.05)
+        time.sleep(0.2)
     raise E10Error("Printer buffer never drained.")
 
 
@@ -598,11 +625,14 @@ def prepare_buffers(bufs, log=None):
 def transfer_buffers(dev, prepared, log=None):
     """Stream prepared buffers back to back.
 
-    Deliberately does NOT wait for buf_full to clear between buffers: that bit
-    clears only once the printer has drained what it had, which is already too
-    late - it stalls, and the tape advances a step unburnt, leaving a white
-    line through whatever glyph sits at the seam. The per-frame acks are the
-    real flow control; the firmware simply withholds them until it has room.
+    Going straight from one buffer's BUF_FULL reply into the next buffer's
+    NEXT_ZIPPEDBULK, with no gap at all, was measured to silently no-op the
+    whole job: it acks every command, status stays clean throughout and
+    after, and the tape counter does not move a millimetre. Waiting for
+    buf_full to actually clear between buffers (see _wait_buffer_ready)
+    fixes it, and surfaces a fatal flag immediately instead of only after the
+    job "succeeds" with nothing printed - cheap insurance either way, paid
+    only between buffers and never after the last one.
     """
     for i, (comp, frames, speed) in enumerate(prepared):
         if not dev.cmd(CMD_NEXT_ZIPPEDBULK, 512, len(frames)):
@@ -612,6 +642,8 @@ def transfer_buffers(dev, prepared, log=None):
         # Read the BUF_FULL reply rather than draining it: same round trip,
         # but it keeps the stream in sync and costs no extra delay.
         dev.cmd(CMD_BUF_FULL, len(comp), speed, want=True)
+        if i < len(prepared) - 1:
+            _wait_buffer_ready(dev)
 
 
 def transfer_single_stream(dev, bufs, log=None):

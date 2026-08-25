@@ -65,6 +65,26 @@ success — a label truncated mid-word with no error anywhere.
 Correct shape, per buffer: compress it alone → `NEXT_ZIPPEDBULK` → data frames
 → `BUF_FULL`.
 
+Two more refinements on top of that shape, added after a session chasing a
+"printer reports success but used no tape" failure that turned out to have
+two causes stacked on top of each other (see **A host-specific RF trap**
+below for the second one):
+
+- **Wait for `buf_full` to clear between buffers, not just for the `BUF_FULL`
+  reply.** Going straight from one buffer's `BUF_FULL` reply into the next
+  buffer's `NEXT_ZIPPEDBULK` with zero gap was measured to silently no-op the
+  whole job: clean status throughout, tape counter unmoved. A poll loop at
+  0.2 s (`_wait_buffer_ready`, only between buffers, never after the last)
+  fixed it in isolation. 0.05 s was tried first and is too fast — it got the
+  RFCOMM link reset by the printer mid-poll.
+- **Cap every non-final buffer to ONE compressed data frame
+  (≤ `DATA_PAYLOAD_SIZE` = 500 B).** A non-final buffer needing 2+ frames
+  reproduced the same silent no-op, 100% of the time, regardless of the wait
+  above. Only the final buffer is exempt — it has no "more data coming"
+  successor to desync. `split_into_buffers` now shrinks and splits off the
+  excess of any non-final buffer that compresses too big, so dense content
+  lands in more, smaller buffers instead of failing outright.
+
 ### 3. Drain the replies you deliberately don't read
 
 Two replies are never read during a transfer: the ack for the **final** data
@@ -190,6 +210,62 @@ python3 -c "import socket; print(hasattr(socket,'AF_BLUETOOTH'))"
 - Text runs **along** the feed axis: render into a PIL image of
   `(feed_length × head_dots)` and transpose — printed line `f`, dot `x` across
   the head, is pixel `(f, x)`.
+
+---
+
+## A host-specific RF trap: USB3 boot disk vs onboard Bluetooth
+
+On one host (`masadora`, a Raspberry Pi CM4 running Raspberry Pi OS Bullseye,
+`aarch64`), every multi-buffer print with real content — any actual card,
+not a near-blank test pattern — failed consistently: `ribbon_end` or a flat
+zero tape used, even with both driver fixes above in place and freshly
+power-cycled. The same driver code, same card ("Experimental Aviator"), had
+printed fine earlier the same day on a different host — including through the
+buffer-seam white-line fix, which needs several successful multi-buffer
+prints in a row to iterate on, so multi-buffer printing was demonstrably not
+broken in general.
+
+`dmesg` had the actual cause, clustered in bursts that lined up exactly with
+active print testing and silent otherwise:
+
+```
+Bluetooth: bad checksum in packet
+```
+
+That is RF-level packet corruption on the Bluetooth radio, not a printer or
+protocol fault. Ruled out in this order before landing on the real cause:
+
+1. **Printer battery / head temperature** — read via the undocumented
+   telemetry bytes (see below): both healthy (~4.15 V, ~26 °C). Not this.
+2. **Wi-Fi router proximity** — the Pi's own Wi-Fi link was at an extreme
+   -17 dBm (i.e. sitting right next to the router), and the router turned out
+   to be dual-band with a strong 2.4 GHz radio too. Moving the Pi improved
+   the link to -32 dBm. The print still failed, with a fresh checksum error
+   during the attempt. Contributing at most, not sufficient on its own.
+3. **The Pi's own Wi-Fi radio** — brought `wlan0` fully down (this host has a
+   wired `eth0` as its default route, so this was safe to test). The print
+   still failed, with a fresh checksum error during the attempt, WiFi
+   entirely off. Ruled out.
+4. **The USB3 boot disk** — `lsusb -t` / `lsblk` showed this host boots from
+   a USB 3.0 SSD (`/`, `/boot`, negotiated at 5000M SuperSpeed). SuperSpeed
+   signaling is a well-documented source of broadband RF noise in the
+   2.4–2.5 GHz band on Raspberry Pi boards, whose Bluetooth antenna sits
+   close to the USB3 controller. Because it is the *boot disk*, there is I/O
+   every time the host does anything, so the interference is close to
+   continuous during a testing session rather than intermittent. This is the
+   likely root cause, though it could not be confirmed by unplugging —
+   doing so would take the host down.
+
+**Not fixable by editing this driver.** The mitigation is external hardware:
+a USB Bluetooth dongle on a *different* USB root hub than the SSD (this host
+has one — a separate 480M/USB2 bus), ideally on a short extension cable to
+get the antenna physically clear of the SSD and its cabling. Not yet tried.
+
+If print jobs on a host that has previously worked start failing again with
+`ribbon_end` or zero tape used, check `dmesg | grep "bad checksum"` before
+suspecting this file or the printer — on a host with this problem, that is
+the actual cause, and no amount of driver-level pacing or buffer-splitting
+fixes it.
 
 ---
 
