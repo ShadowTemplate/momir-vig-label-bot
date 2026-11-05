@@ -21,6 +21,16 @@ class MomirVigLabelBot:
     def __init__(self):
         self._bot = telegram.Bot(token=MOMIR_VIG_LABEL_BOT_TOKEN)
 
+    @staticmethod
+    def _is_ignorable_update(update):
+        # Transient network errors, 409 Conflicts (a dropped long-poll that Telegram
+        # still holds open) and bare updates that python-telegram-bot 8.1.1 cannot
+        # parse (only an update_id) are noise and not worth a notification.
+        text = str(update)
+        if any(s in text for s in ("Timed out", "urllib3 HTTPError", "Conflict: terminated")):
+            return True
+        return getattr(update, 'update_id', None) is not None and set(update.to_dict()) <= {'update_id'}
+
     def process_update(self, update):
         log.info(update)
         log.info(f"Processing new message...")
@@ -38,7 +48,7 @@ class MomirVigLabelBot:
             else:
                 self.send_error_message(chat_id)
         else:
-            if "Timed out" not in str(update) and "urllib3 HTTPError" not in str(update):
+            if not self._is_ignorable_update(update):
                 self._bot.send_message(
                     chat_id=MY_ID,
                     text=f"Unknown message update type: {update}.",
